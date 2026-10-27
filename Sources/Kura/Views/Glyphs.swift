@@ -8,7 +8,7 @@ enum Glyph: CaseIterable {
     case chevronLeft, chevronRight, close, sort, external, image, video, document
     case star, play, warning, checkCircle, emptySelection, panels
     case pause, stepBack, stepForward, loop, volume, volumeMuted, fullscreen
-    case viewOptions, thumbSmall, thumbLarge
+    case viewOptions, thumbSmall, thumbLarge, link, note
 
     /// “还没有”的状态用虚线表示：未分类、未加标签、未选择
     var dashed: Bool { self == .uncategorized || self == .untagged || self == .emptySelection }
@@ -52,6 +52,8 @@ enum Glyph: CaseIterable {
         case .viewOptions: "M2.75 4.5h6.5M12.25 4.5h1M2.75 11.5h1M6.75 11.5h6.5" + Self.circle(10.75, 4.5, 1.5) + Self.circle(5.25, 11.5, 1.5)
         case .thumbSmall: Self.rr(4.5, 4.5, 7, 7, 1.5)
         case .thumbLarge: Self.rr(2, 2, 12, 12, 2.5)
+        case .link: "M6.75 9.25a2.75 2.75 0 0 0 3.9.1l1.9-1.9a2.75 2.75 0 0 0-3.9-3.9l-.6.6M9.25 6.75a2.75 2.75 0 0 0-3.9-.1l-1.9 1.9a2.75 2.75 0 0 0 3.9 3.9l.6-.6"
+        case .note: Self.rr(3.25, 2.75, 9.5, 10.5, 1.5) + "M5.75 6h4.5M5.75 8.5h4.5M5.75 11h2.5"
         case .fullscreen: "M2.75 6V3.75a1 1 0 0 1 1-1H6M10 2.75h2.25a1 1 0 0 1 1 1V6M13.25 10v2.25a1 1 0 0 1-1 1H10M6 13.25H3.75a1 1 0 0 1-1-1V10"
         }
     }

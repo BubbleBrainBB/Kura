@@ -253,143 +253,9 @@ extension TagMark {
     }
 }
 
-struct TagChip: View {
-    let title: String
-    var glyph: Glyph?
-    var iconURL: URL?
-    /// 没有图标时，用这个标签名的颜色画小圆点
-    var dotTag: String?
-    var onRemove: (() -> Void)?
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if let glyph {
-                GlyphIcon(glyph, size: 12)
-            }
-            if let iconURL {
-                TagIconImage(url: iconURL, size: 12)
-                    .foregroundStyle(.secondary)
-            } else if let dotTag {
-                Circle().fill(Palette.tag(dotTag)).frame(width: 6, height: 6)
-            }
-            Text(title).font(.system(size: 12))
-            if let onRemove {
-                Button(action: onRemove) {
-                    GlyphIcon(.close, size: 10, lineWidth: 1.75)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("移除")
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.primary.opacity(0.07), in: Capsule())
-    }
-}
-
-struct TagEditor: View {
-    let store: LibraryStore
-    let tags: [String]
-    /// 收到的可能是「上级/名称」这样的路径，交给 store.addTagPath 处理
-    var onAdd: (String) -> Void
-    var onRemove: (String) -> Void
-    @State private var draft = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !tags.isEmpty {
-                FlowLayout {
-                    ForEach(tags, id: \.self) { tag in
-                        TagChip(title: tag, iconURL: store.tagIconURL(tag), dotTag: store.tagColorKey(tag)) { onRemove(tag) }
-                            .help(store.tagPath(tag))
-                    }
-                }
-            }
-            TextField("添加标签，回车确认", text: $draft)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(commit)
-            let query = draft.trimmingCharacters(in: .whitespaces)
-            if !query.isEmpty {
-                suggestions(for: query)
-            }
-        }
-    }
-
-    /// 按名字匹配，上级用灰色写在前面
-    @ViewBuilder
-    private func suggestions(for query: String) -> some View {
-        let all = store.allTags
-        let matches = all.filter { !tags.contains($0) && $0.localizedCaseInsensitiveContains(query) }.prefix(8)
-        let exists = all.contains { $0.caseInsensitiveCompare(query) == .orderedSame }
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(matches), id: \.self) { tag in
-                SuggestionRow(action: { add(tag) }) {
-                    TagMark(store: store, tag: tag, size: 13)
-                        .foregroundStyle(.secondary)
-                    let parents = store.ancestors(of: tag)
-                    (parents.isEmpty ? Text("") : Text(parents.joined(separator: " › ") + " › ").foregroundStyle(.secondary))
-                        + Text(tag)
-                }
-            }
-            if !exists {
-                if !matches.isEmpty { Divider().padding(.vertical, 3) }
-                SuggestionRow(action: commit) {
-                    GlyphIcon(.plus, size: 13).foregroundStyle(.secondary)
-                    Text("新建标签「\(query.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " › "))」")
-                }
-            }
-        }
-        .padding(4)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.1)))
-        if !query.contains("/") {
-            Text("输入「上级/名称」可以直接建成子标签")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-        }
-    }
-
-    private func add(_ tag: String) {
-        onAdd(tag)
-        draft = ""
-    }
-
-    /// 支持用逗号一次输入多个标签；和已有标签只差大小写时用已有的写法
-    private func commit() {
-        let all = store.allTags
-        let parts = draft.split(whereSeparator: { $0 == "," || $0 == "，" })
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        for part in parts {
-            onAdd(all.first { $0.caseInsensitiveCompare(part) == .orderedSame } ?? part)
-        }
-        draft = ""
-    }
-}
-
-private struct SuggestionRow<Label: View>: View {
-    var action: () -> Void
-    @ViewBuilder var label: Label
-    @State private var hovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 7) { label }
-                .font(.system(size: 12))
-                .lineLimit(1)
-                .padding(.horizontal, 6)
-                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-                .background(hovered ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 5))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovered = $0 }
-    }
-}
-
 struct RatingControl: View {
     let rating: Int
+    var size: CGFloat = 19
     var onChange: (Int) -> Void
 
     var body: some View {
@@ -398,7 +264,7 @@ struct RatingControl: View {
                 Button {
                     onChange(value == rating ? 0 : value)
                 } label: {
-                    GlyphIcon(.star, size: 19, lineWidth: 1.25, filled: value <= rating)
+                    GlyphIcon(.star, size: size, lineWidth: 1.25, filled: value <= rating)
                         .foregroundStyle(value <= rating ? Color.orange : Color.secondary)
                 }
                 .buttonStyle(.plain)
@@ -430,6 +296,27 @@ enum Format {
 
     static func date(_ date: Date) -> String {
         dateFormatter.string(from: date)
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private static let monthDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M月d日 HH:mm"
+        return formatter
+    }()
+
+    /// 近的日期说「今天」「昨天」，今年的省掉年份
+    static func relativeDate(_ date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "今天 " + timeFormatter.string(from: date) }
+        if calendar.isDateInYesterday(date) { return "昨天 " + timeFormatter.string(from: date) }
+        if calendar.isDate(date, equalTo: Date(), toGranularity: .year) { return monthDayFormatter.string(from: date) }
+        return dateFormatter.string(from: date)
     }
 }
 

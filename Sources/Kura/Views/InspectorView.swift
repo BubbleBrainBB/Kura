@@ -37,19 +37,12 @@ struct ScopeInspector: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 0) {
                 header
+                    .padding(.bottom, 14)
 
                 InspectorSection(title: searching ? "属性 · 搜索结果" : "属性") {
-                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                        ForEach(rows, id: \.0) { row in
-                            GridRow {
-                                Text(row.0).foregroundStyle(.secondary)
-                                Text(row.1).monospacedDigit().textSelection(.enabled)
-                            }
-                        }
-                    }
-                    .font(.system(size: 12))
+                    InfoCard(rows: rows)
                 }
 
                 if case .tag(let tag) = scope {
@@ -59,6 +52,7 @@ struct ScopeInspector: View {
                 Text(scope == .trash ? "清空废纸篓后，文件会移到系统废纸篓。" : "选中素材可以查看和编辑它的信息。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .padding(.top, 4)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -213,7 +207,7 @@ struct ScopeInspector: View {
             if children > 0 { rows.append(("子文件夹", "\(children) 个")) }
         }
         if let latest = items.map(\.addedAt).max() {
-            rows.append(("最近添加", Format.date(latest)))
+            rows.append(("最近添加", Format.relativeDate(latest)))
         }
         return rows
     }
@@ -249,66 +243,41 @@ private struct FolderNameField: View {
     }
 }
 
-struct InspectorSection<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-            content
-        }
-    }
-}
-
 struct ItemInspector: View {
     let store: LibraryStore
     let item: Item
     @State private var name: String
     @State private var note: String
     @State private var source: String
+    @State private var nameHovered = false
+    @FocusState private var nameFocused: Bool
+    @State private var editingSource = false
+    @FocusState private var sourceFocused: Bool
+    @State private var hoveredColor: String?
+    @State private var copiedColor: String?
 
     init(store: LibraryStore, item: Item) {
         self.store = store
         self.item = item
-        _name = State(initialValue: item.name)
+        _name = State(initialValue: item.name.filter { !$0.isNewline })
         _note = State(initialValue: item.note)
         _source = State(initialValue: item.url)
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                ThumbnailView(url: store.thumbURL(for: item), rev: item.thumbRev, kind: item.kind, contentMode: .fit)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: min(220, 268 / item.displayAspect))
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-
-                VStack(alignment: .leading, spacing: 6) {
-                    TextField("名称", text: $name)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 15, weight: .semibold))
-                        .onSubmit(commitName)
-                    Text("\(item.ext.uppercased()) · \(Format.bytes(item.size))")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    RatingControl(rating: item.rating) { store.setRating([item.id], $0) }
-                        .padding(.top, 4)
-                }
+            VStack(alignment: .leading, spacing: 0) {
+                ItemPreview(store: store, item: item)
+                header
 
                 if !item.colors.isEmpty {
                     InspectorSection(title: "颜色") {
-                        HStack(spacing: 8) {
-                            ForEach(item.colors, id: \.self) { hex in
-                                Circle()
-                                    .fill(Color(hex: hex))
-                                    .frame(width: 22, height: 22)
-                                    .overlay(Circle().strokeBorder(Color.primary.opacity(0.15)))
-                                    .onTapGesture { ItemActions.copyText(hex) }
-                                    .help("\(hex)（点击拷贝）")
-                            }
+                        PaletteStrip(colors: item.colors, hovered: $hoveredColor, copied: $copiedColor)
+                    } accessory: {
+                        if let hex = hoveredColor ?? copiedColor {
+                            Text(copiedColor == hex ? "已拷贝 \(hex)" : "\(hex) · 点击拷贝")
+                                .font(.system(size: 11).monospaced())
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -322,24 +291,17 @@ struct ItemInspector: View {
                     )
                 }
 
-                // 不用 TextEditor：它在 ScrollView 里的点击区域会盖住上方的输入框
                 InspectorSection(title: "备注") {
-                    TextField("添加备注", text: $note, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(3...10)
+                    NoteEditor(text: $note)
                 }
 
                 InspectorSection(title: "来源") {
-                    HStack(spacing: 6) {
-                        TextField("https://", text: $source)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit(commitSource)
-                        if let url = URL(string: source), url.scheme?.hasPrefix("http") == true {
-                            Link(destination: url) {
-                                GlyphIcon(.external)
-                            }
-                            .help("在浏览器中打开")
-                        }
+                    sourceContent
+                } accessory: {
+                    if editingSource {
+                        SectionAction(title: "完成") { finishSource() }
+                    } else if !source.isEmpty {
+                        SectionAction(title: "编辑") { editSource() }
                     }
                 }
 
@@ -347,34 +309,35 @@ struct ItemInspector: View {
                     FlowLayout {
                         ForEach(item.folderIDs, id: \.self) { id in
                             if let folder = store.folder(id) {
-                                TagChip(title: folder.name, glyph: .folder) {
+                                InspectorChip(title: folder.name, mark: {
+                                    GlyphIcon(.folder, size: 13).foregroundStyle(Palette.folder(folder.color))
+                                }) {
                                     store.removeFromFolder([item.id], id)
                                 }
                             }
                         }
-                        AddToFolderMenu(store: store, ids: [item.id])
+                        AddToFolderChip(store: store, ids: [item.id], title: item.folderIDs.isEmpty ? "添加到文件夹" : "文件夹")
                     }
                 }
 
                 InspectorSection(title: "信息") {
-                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                        ForEach(infoRows, id: \.0) { row in
-                            GridRow {
-                                Text(row.0).foregroundStyle(.secondary)
-                                Text(row.1).textSelection(.enabled)
-                            }
-                        }
-                    }
-                    .font(.system(size: 12))
+                    InfoCard(rows: infoRows)
                 }
-
-                HStack {
-                    Button("在访达中显示") { ItemActions.reveal([store.fileURL(for: item)]) }
-                    Button("打开") { ItemActions.open(store.fileURL(for: item)) }
-                }
-                .controlSize(.small)
             }
             .padding(16)
+        }
+        .onChange(of: copiedColor) { _, hex in
+            guard let hex else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if copiedColor == hex { copiedColor = nil }
+            }
+        }
+        // 名称框是多行的（长名字换行显示），回车会先插进一个换行：去掉它，当作确认
+        .onChange(of: name) { _, value in
+            guard value.contains(where: \.isNewline) else { return }
+            name = value.filter { !$0.isNewline }
+            commitName()
+            nameFocused = false
         }
         .task(id: name) {
             try? await Task.sleep(for: .milliseconds(500))
@@ -384,10 +347,6 @@ struct ItemInspector: View {
             try? await Task.sleep(for: .milliseconds(500))
             if !Task.isCancelled { commitNote() }
         }
-        .task(id: source) {
-            try? await Task.sleep(for: .milliseconds(500))
-            if !Task.isCancelled { commitSource() }
-        }
         .onDisappear {
             commitName()
             commitNote()
@@ -395,18 +354,99 @@ struct ItemInspector: View {
         }
     }
 
+    /// 名称直接改，长名字换行；下面一行是格式、尺寸、大小，评分在右边
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("名称", text: $name, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 16, weight: .semibold))
+                .lineLimit(1...4)
+                .focused($nameFocused)
+                .onSubmit {
+                    commitName()
+                    nameFocused = false
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background {
+                    if nameFocused {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color(nsColor: .controlBackgroundColor))
+                    } else if nameHovered {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.05))
+                    }
+                }
+                .editingRing(nameFocused, cornerRadius: 6)
+                .onHover { nameHovered = $0 }
+                .padding(.horizontal, -6)
+            HStack(spacing: 10) {
+                Text(metaLine)
+                    .font(.system(size: 11.5))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                RatingControl(rating: item.rating, size: 14) { store.setRating([item.id], $0) }
+            }
+        }
+        .padding(.vertical, 14)
+    }
+
+    private var metaLine: String {
+        var parts = [item.ext.uppercased()]
+        if let dimensions = item.dimensionText { parts.append(dimensions) }
+        if let duration = item.duration { parts.append(Format.duration(duration)) }
+        parts.append(Format.bytes(item.size))
+        return parts.joined(separator: " · ")
+    }
+
+    /// 平时显示成链接卡片；点「编辑」或空着时点那一行，换成输入框
+    @ViewBuilder
+    private var sourceContent: some View {
+        if editingSource {
+            TextField("https://", text: $source)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .focused($sourceFocused)
+                .onSubmit(finishSource)
+                .onExitCommand(perform: finishSource)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .inspectorCard()
+                .editingRing(sourceFocused)
+                .onChange(of: sourceFocused) { _, focused in
+                    if !focused { finishSource() }
+                }
+        } else if source.isEmpty {
+            GhostRow(glyph: .link, title: "粘贴来源链接", action: editSource)
+        } else {
+            SourceLinkCard(text: source)
+        }
+    }
+
+    private func editSource() {
+        editingSource = true
+        DispatchQueue.main.async { sourceFocused = true }
+    }
+
+    private func finishSource() {
+        guard editingSource else { return }
+        source = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        commitSource()
+        editingSource = false
+    }
+
     private var infoRows: [(String, String)] {
         var rows: [(String, String)] = [("格式", item.ext.uppercased())]
         if let dimensions = item.dimensionText { rows.append(("尺寸", dimensions)) }
         if let duration = item.duration { rows.append(("时长", Format.duration(duration))) }
-        rows.append(("文件大小", Format.bytes(item.size)))
-        rows.append(("添加时间", Format.date(item.addedAt)))
-        rows.append(("修改时间", Format.date(item.modifiedAt)))
+        rows.append(("大小", Format.bytes(item.size)))
+        rows.append(("添加", Format.relativeDate(item.addedAt)))
+        rows.append(("修改", Format.relativeDate(item.modifiedAt)))
         return rows
     }
 
     private func commitName() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = name.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty, trimmed != store.item(item.id)?.name { store.rename(item.id, to: trimmed) }
     }
 
@@ -420,33 +460,6 @@ struct ItemInspector: View {
     }
 }
 
-struct AddToFolderMenu: View {
-    let store: LibraryStore
-    let ids: [String]
-
-    var body: some View {
-        Menu {
-            if store.folders.isEmpty {
-                Text("还没有文件夹")
-            }
-            ForEach(store.folderOutline(), id: \.folder.id) { entry in
-                Button(String(repeating: "    ", count: entry.depth) + entry.folder.name) {
-                    store.addToFolder(ids, entry.folder.id)
-                }
-            }
-        } label: {
-            Label {
-                Text("添加")
-            } icon: {
-                Glyph.plus.image(size: 12)
-            }
-                .font(.system(size: 12))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-    }
-}
-
 struct MultiItemInspector: View {
     let store: LibraryStore
     let items: [Item]
@@ -456,7 +469,7 @@ struct MultiItemInspector: View {
         let commonTags = items.dropFirst().reduce(Set(items.first?.tags ?? [])) { $0.intersection($1.tags) }
         let commonRating = Set(items.map(\.rating)).count == 1 ? items.first?.rating ?? 0 : 0
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 0) {
                 ZStack {
                     ForEach(Array(items.prefix(3).enumerated().reversed()), id: \.element.id) { offset, item in
                         ThumbnailView(url: store.thumbURL(for: item), rev: item.thumbRev, kind: item.kind)
@@ -475,9 +488,10 @@ struct MultiItemInspector: View {
                     Text("共 \(Format.bytes(items.reduce(0) { $0 + $1.size }))")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                    RatingControl(rating: commonRating) { store.setRating(ids, $0) }
+                    RatingControl(rating: commonRating, size: 14) { store.setRating(ids, $0) }
                         .padding(.top, 4)
                 }
+                .padding(.vertical, 14)
 
                 InspectorSection(title: "共同标签") {
                     TagEditor(
@@ -489,7 +503,7 @@ struct MultiItemInspector: View {
                 }
 
                 InspectorSection(title: "文件夹") {
-                    AddToFolderMenu(store: store, ids: ids)
+                    AddToFolderChip(store: store, ids: ids, title: "添加到文件夹")
                 }
 
                 Button(role: .destructive) {
@@ -502,6 +516,7 @@ struct MultiItemInspector: View {
                     }
                 }
                 .controlSize(.small)
+                .padding(.top, 14)
             }
             .padding(16)
         }
