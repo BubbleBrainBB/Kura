@@ -14,6 +14,7 @@ struct SidebarView: View {
     @State private var folderToDelete: Folder?
     @State private var tagToDelete: String?
     @State private var tagHeaderTargeted = false
+    @State private var reclick = ReclickTracker()
 
     enum NamePrompt {
         case newFolder(parentID: String?)
@@ -48,11 +49,13 @@ struct SidebarView: View {
                     store: store,
                     parentID: nil,
                     counts: counts.folders,
+                    selection: selection,
                     expanded: $expanded,
                     actions: FolderActions(
                         create: { ask(.newFolder(parentID: $0), prefill: "") },
                         rename: { ask(.renameFolder($0), prefill: $0.name) },
-                        delete: { folderToDelete = $0 }
+                        delete: { folderToDelete = $0 },
+                        reclick: reclick
                     )
                 )
             } header: {
@@ -83,7 +86,8 @@ struct SidebarView: View {
                         create: { ask(.newTag(parent: $0), prefill: "") },
                         rename: { ask(.renameTag($0), prefill: $0) },
                         delete: { tagToDelete = $0 },
-                        moved: { collapsedTags.remove($0) }
+                        moved: { collapsedTags.remove($0) },
+                        reclick: reclick
                     )
                 )
                 // 层级一变就整段重建：标签挪进别的分组后，列表会把它旧的选中高亮留在新位置上，
@@ -111,6 +115,24 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .background { reclick.listMarker }
+        .onAppear {
+            reclick.start(selection: { selection }, toggle: toggleExpansion)
+        }
+        .onDisappear { reclick.stop() }
+        // 选中有子级的标签或文件夹时顺手展开，不用再去点箭头；再点一下已选中的就收起
+        .onChange(of: selection) { _, item in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                switch item {
+                case .tag(let tag):
+                    collapsedTags.subtract([tag] + store.ancestors(of: tag))
+                case .folder(let id):
+                    expanded.insert(id)
+                default:
+                    break
+                }
+            }
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             LibrarySwitcher(store: store)
         }
@@ -186,6 +208,20 @@ struct SidebarView: View {
         .tag(item)
     }
 
+    /// 再点一下已选中的标签或文件夹：展开就收起，收起就展开
+    private func toggleExpansion(_ item: SidebarItem) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            switch item {
+            case .tag(let tag) where store.tagChildren[tag]?.isEmpty == false:
+                if collapsedTags.contains(tag) { collapsedTags.remove(tag) } else { collapsedTags.insert(tag) }
+            case .folder(let id) where store.hasChildren(id):
+                if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+            default:
+                break
+            }
+        }
+    }
+
     private func ask(_ prompt: NamePrompt, prefill: String) {
         nameDraft = prefill
         self.prompt = prompt
@@ -220,6 +256,7 @@ struct TagActions {
     var delete: (String) -> Void
     /// 有标签移进来了，展开它
     var moved: (String) -> Void
+    let reclick: ReclickTracker
 }
 
 struct TagTree: View {
@@ -290,6 +327,7 @@ struct TagRow: View {
             }
             return DropHelper.fileURLs(from: providers, completion: handleDrop)
         }
+        .background { if selected { actions.reclick.rowMarker(for: .tag(tag)) } }
         .contextMenu { menu }
     }
 
@@ -375,12 +413,14 @@ struct FolderActions {
     var create: (String?) -> Void
     var rename: (Folder) -> Void
     var delete: (Folder) -> Void
+    let reclick: ReclickTracker
 }
 
 struct FolderTree: View {
     @ObservedObject var store: LibraryStore
     let parentID: String?
     let counts: [String: Int]
+    let selection: SidebarItem?
     @Binding var expanded: Set<String>
     let actions: FolderActions
 
@@ -388,12 +428,12 @@ struct FolderTree: View {
         ForEach(store.childFolders(of: parentID)) { folder in
             if store.hasChildren(folder.id) {
                 DisclosureGroup(isExpanded: isExpanded(folder.id)) {
-                    FolderTree(store: store, parentID: folder.id, counts: counts, expanded: $expanded, actions: actions)
+                    FolderTree(store: store, parentID: folder.id, counts: counts, selection: selection, expanded: $expanded, actions: actions)
                 } label: {
-                    FolderRow(store: store, folder: folder, count: counts[folder.id] ?? 0, actions: actions)
+                    FolderRow(store: store, folder: folder, count: counts[folder.id] ?? 0, selected: selection == .folder(folder.id), actions: actions)
                 }
             } else {
-                FolderRow(store: store, folder: folder, count: counts[folder.id] ?? 0, actions: actions)
+                FolderRow(store: store, folder: folder, count: counts[folder.id] ?? 0, selected: selection == .folder(folder.id), actions: actions)
             }
         }
     }
@@ -410,6 +450,7 @@ struct FolderRow: View {
     let store: LibraryStore
     let folder: Folder
     let count: Int
+    let selected: Bool
     let actions: FolderActions
     @State private var dropTargeted = false
 
@@ -421,6 +462,7 @@ struct FolderRow: View {
         }
         .badge(count)
         .tag(SidebarItem.folder(folder.id))
+        .background { if selected { actions.reclick.rowMarker(for: .folder(folder.id)) } }
         .listRowBackground(
             dropTargeted ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.25)).padding(.horizontal, 8) : nil
         )
@@ -476,5 +518,77 @@ struct LibrarySwitcher: View {
         .menuIndicator(.hidden)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+}
+
+/// 认出“又点了一下已经选中的那一行”。列表点已选中的行不会改选中，也不会告诉我们；
+/// 往行上加点击手势又会和列表的点选抢鼠标，点了常常没反应。所以在窗口层面看鼠标：
+/// 按下和松开都落在选中的那一行上，而且按下时它就已经是选中的，就是再点了一下。左边的展开箭头不算，它自己会展开收起
+final class ReclickTracker {
+    /// 选中那一行和整个侧边栏背后各放一个不接收点击的 NSView，点的时候直接问它们在窗口里的位置
+    fileprivate weak var selectedRow: MarkerView?
+    fileprivate weak var list: MarkerView?
+    private var pressed: SidebarItem?
+    private var monitor: Any?
+
+    func start(selection: @escaping () -> SidebarItem?, toggle: @escaping (SidebarItem) -> Void) {
+        stop()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+            guard let self else { return event }
+            let hit = self.selectedItem(at: event).flatMap { $0 == selection() ? $0 : nil }
+            if event.type == .leftMouseDown {
+                // 按下时列表还没处理这一下，这时的选中就是点之前的选中
+                pressed = event.modifierFlags.intersection([.command, .shift, .control, .option]).isEmpty ? hit : nil
+            } else {
+                if let pressed, pressed == hit {
+                    DispatchQueue.main.async { toggle(pressed) }
+                }
+                pressed = nil
+            }
+            return event
+        }
+    }
+
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    /// 鼠标是否落在选中那一行上：从行内容的左边（展开箭头右边）到侧边栏右边
+    private func selectedItem(at event: NSEvent) -> SidebarItem? {
+        guard let row = selectedRow, let item = row.item, let list,
+              let window = row.window, event.window === window else { return nil }
+        let rowRect = row.convert(row.bounds, to: nil)
+        let listRect = list.convert(list.bounds, to: nil)
+        let area = NSRect(x: rowRect.minX, y: rowRect.minY, width: listRect.maxX - rowRect.minX, height: rowRect.height)
+        return area.contains(event.locationInWindow) ? item : nil
+    }
+
+    /// 放在选中那一行的背景里
+    func rowMarker(for item: SidebarItem) -> some View {
+        Marker { view in
+            view.item = item
+            self.selectedRow = view
+        }
+    }
+
+    /// 放在侧边栏列表的背景里
+    var listMarker: some View {
+        Marker { self.list = $0 }
+    }
+}
+
+fileprivate final class MarkerView: NSView {
+    var item: SidebarItem?
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private struct Marker: NSViewRepresentable {
+    var update: (MarkerView) -> Void
+
+    func makeNSView(context: Context) -> MarkerView { MarkerView() }
+
+    func updateNSView(_ view: MarkerView, context: Context) {
+        update(view)
     }
 }
