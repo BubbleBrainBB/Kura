@@ -49,10 +49,12 @@ struct ScopeInspector: View {
                     tagSections(tag)
                 }
 
-                Text(scope == .trash ? "清空废纸篓后，文件会移到系统废纸篓。" : "选中素材可以查看和编辑它的信息。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
+                if scope == .trash {
+                    Text("清空废纸篓后，文件会移到系统废纸篓。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -74,7 +76,7 @@ struct ScopeInspector: View {
         return ""
     }
 
-    /// 父标签：列出子标签，可以点进去；自己设了图标的，显示图标
+    /// 父标签：列出子标签，可以点进去
     @ViewBuilder
     private func tagSections(_ tag: String) -> some View {
         let children = store.tagChildren[tag] ?? []
@@ -117,20 +119,6 @@ struct ScopeInspector: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
-                }
-            }
-        }
-        if store.tagInfo[tag]?.icon != nil, let url = store.tagIconURL(tag) {
-            InspectorSection(title: "图标") {
-                HStack(spacing: 10) {
-                    TagIconImage(url: url, size: 20)
-                        .frame(width: 36, height: 36)
-                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-                    if !children.isEmpty {
-                        Text("子标签没单独设图标时，都用这一个")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
                 }
             }
         }
