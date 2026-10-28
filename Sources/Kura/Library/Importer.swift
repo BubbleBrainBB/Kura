@@ -20,11 +20,16 @@ struct ImportJob: Sendable {
     var source: URL
     var folderIDs: [String] = []
     var preset: ImportPreset?
+    /// 提前定好 id，粘贴完就能选中新素材
+    var itemID = UUID().uuidString
 }
 
 extension LibraryStore {
-    /// 导入拖进来或选中的文件。文件夹会变成同名的资源库文件夹；本资源库里的文件只会被加进目标文件夹。
-    func importFiles(_ urls: [URL], into folderID: String? = nil) {
+    /// 导入拖进来、粘贴或选中的文件。文件夹会变成同名的资源库文件夹；本资源库里的文件只会被加进目标文件夹。
+    /// 返回导入后的素材 id（含已经在库里的）
+    @discardableResult
+    func importFiles(_ urls: [URL], into folderID: String? = nil, tags: [String] = []) -> [String] {
+        let preset = tags.isEmpty ? nil : ImportPreset(tags: tags)
         var jobs: [ImportJob] = []
         var existing: [String] = []
         for url in urls {
@@ -41,15 +46,19 @@ extension LibraryStore {
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
             if isDirectory.boolValue {
                 let folder = createFolder(named: url.lastPathComponent, parentID: folderID)
-                jobs += Self.regularFiles(in: url).map { ImportJob(source: $0, folderIDs: [folder.id]) }
+                jobs += Self.regularFiles(in: url).map { ImportJob(source: $0, folderIDs: [folder.id], preset: preset) }
             } else {
-                jobs.append(ImportJob(source: url, folderIDs: folderID.map { [$0] } ?? []))
+                jobs.append(ImportJob(source: url, folderIDs: folderID.map { [$0] } ?? [], preset: preset))
             }
         }
         if let folderID, !existing.isEmpty {
             addToFolder(existing, folderID)
         }
+        if !existing.isEmpty {
+            for tag in tags { addTagPath(existing, tag) }
+        }
         enqueue(jobs)
+        return existing + jobs.map(\.itemID)
     }
 
     nonisolated static func regularFiles(in directory: URL) -> [URL] {
@@ -111,7 +120,7 @@ extension LibraryStore {
     /// 复制文件、读取信息、生成缩略图和颜色。在后台线程运行。
     nonisolated static func prepare(_ job: ImportJob, libraryURL: URL) async -> Item? {
         let fm = FileManager.default
-        let id = UUID().uuidString
+        let id = job.itemID
         let source = job.source
         let fileName = source.lastPathComponent
         let directory = libraryURL.appendingPathComponent("items/\(id)", isDirectory: true)

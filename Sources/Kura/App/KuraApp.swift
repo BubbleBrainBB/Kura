@@ -16,8 +16,22 @@ struct KuraApp: App {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// 「编辑 › 粘贴」（⌘V）：光标在输入框里时由输入框自己粘贴文字；
+    /// 没有输入框接收时这个动作沿响应链传到这里，把剪贴板里的图片、文件导入资源库
+    @MainActor @objc func paste(_ sender: Any?) {
+        NotificationCenter.default.post(name: .kuraPaste, object: nil)
+    }
+
+    @MainActor
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(paste(_:)) {
+            return AppModel.shared?.library != nil && PasteboardImport.hasContent()
+        }
+        return true
+    }
 
     /// 拖到 Dock 图标上、或 `open -a "Kura" 文件…` 打开的文件：资源库直接打开，其余导入当前资源库
     @MainActor

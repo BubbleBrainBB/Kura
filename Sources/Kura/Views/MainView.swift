@@ -119,6 +119,7 @@ struct MainView: View {
             selection = []
             previewID = nil
         }
+        .onReceive(NotificationCenter.default.publisher(for: .kuraPaste)) { _ in pasteFromClipboard() }
         .onChange(of: showSidebar) { _, shown in
             guard shown != sidebarShown else { return }
             withAnimation(Self.panelAnimation) { sidebarShown = shown }
@@ -311,6 +312,19 @@ struct MainView: View {
         .popover(isPresented: $showViewOptions, arrowEdge: .bottom) {
             ViewOptionsPanel(kind: $kindFilter, sortKey: $sortKey, ascending: $ascending, thumbnailSize: $thumbnailSize)
         }
+    }
+
+    /// 粘贴进当前范围：在文件夹里就进这个文件夹，在标签下就打上这个标签；粘贴完选中新素材
+    private func pasteFromClipboard() {
+        var tag: String?
+        if case .tag(let name) = scope { tag = name }
+        guard let ids = store.pasteFromClipboard(into: currentFolderID, tag: tag) else {
+            NSSound.beep()
+            return
+        }
+        if scope == .trash { sidebar = .all }
+        previewID = nil
+        DispatchQueue.main.async { selection = Set(ids) }
     }
 
     private var currentFolderID: String? {
